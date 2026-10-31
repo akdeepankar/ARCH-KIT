@@ -1,4 +1,4 @@
-# ArchKit — Residential Studio
+# ArchKit - Residential Studio
 
 A residential design studio with a shared 2D/3D project model and Muse Spark room planning.
 
