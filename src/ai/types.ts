@@ -1,0 +1,11 @@
+import type {Project} from '../model';
+export type StudioMode='plan'|'building'|'interior'|'refine'|'views'|'convert';
+export type Asset={id:string;url:string;name:string};
+export type Concept={id:string;batchId:string;slot:number;title:string;prompt:string;status:'queued'|'generating'|'completed'|'failed';asset?:Asset;error?:string;parentId?:string;createdAt:number;model:string};
+export type Batch={id:string;projectId:string;project:Project;prompt:string;mode:StudioMode;roomId?:string;planId?:string;sourceView?:'plan'|'orbit'|'walk';referenceIds:string[];parentId?:string;createdAt:number;concepts:Concept[];summary:string};
+export type Gallery={batches:Batch[];references:Asset[];selectedId?:string;proposals?:DesignProposal[]};
+export type PlanProposal={id:string;kind:'plan';projectId:string;createdAt:number;sourceId:string;sourceSnapshot:string;project:Project;summary:string;interpretation:'reconstruction'|'conceptual interpretation';uncertainties:string[];dimensionNotes:string[];estimatedRoomIds:string[]};
+export type AppearancePatch={finish?:string;roof?:string;parapet?:number};
+export type AppearanceProposal={id:string;kind:'appearance';projectId:string;createdAt:number;sourceId:string;sourceSnapshot:string;patch:AppearancePatch;summary:string;unsupported:string[]};
+export type DesignProposal=PlanProposal|AppearanceProposal;
+export type ViewRender={id:string;projectId:string;prompt:string;view:'plan'|'orbit'|'walk';asset:Asset;sourceId:string;parentId?:string;createdAt:number;model:string};

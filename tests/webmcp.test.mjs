@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {registerStudioTools} from '../src/useWebMCP.ts';
+import {emptyProject} from '../src/model.ts';
+import {executeStudioTool} from '../src/studioActions.ts';
+let state={project:emptyProject(),view:'plan',selected:null,mutate:(name,input)=>{state.project=executeStudioTool(state.project,name,input);return state.project},setView:view=>state.view=view,select:(floorId,id)=>{state.project={...state.project,active:floorId};state.selected=id}};
+const tools=new Map(),controller=new AbortController();registerStudioTools({registerTool:(tool,options)=>{assert.equal(options.signal,controller.signal);tools.set(tool.name,tool);options.signal.addEventListener('abort',()=>tools.delete(tool.name))}},()=>state,controller.signal);
+assert.equal(tools.size,28);const call=(name,input)=>tools.get(name).execute(input);
+await call('apply_floor_edits',{edits:[{action:'add',name:'Upper'}]});let p=(await call('get_project',{})).project;assert.equal(p.floors.length,2);const floor=p.active;
+await call('apply_room_edits',{edits:[{action:'add',floorId:floor,kind:'office'}]});p=(await call('get_project',{})).project;const room=p.floors[1].rooms[0];
+await call('apply_surface_colors',{edits:[{target:'room-wall',floorId:floor,roomId:room.id,side:0,color:'#a3b18a'}]});assert.equal((await call('get_room',{floorId:floor,roomId:room.id})).room.wallColors['0'],'#a3b18a');
+const before=JSON.stringify(state.project),invalid=await call('apply_surface_colors',{edits:[{target:'exterior',color:'bad'}]});assert.equal(invalid.success,false);assert.equal(JSON.stringify(state.project),before);
+assert.equal((await call('get_room',{floorId:floor,roomId:'missing'})).success,false);
+await call('select_studio_element',{floorId:floor,id:room.id});assert.equal(state.selected,room.id);
+await call('set_view_mode',{mode:'orbit'});assert.equal((await call('get_project',{})).view,'orbit');
+assert.equal((await call('list_space_types',{})).spaces.length,10);assert.equal((await call('get_floor_plan',{floorId:floor})).floor.name,'Upper');
+assert.ok((await call('get_studio_capabilities',{})).tools.some(t=>t.name==='apply_opening_edits'));
+const openingResult=await call('apply_opening_edits',{edits:[{action:'add',floorId:floor,roomId:room.id,kind:'door',side:0,width:3,height:7}]});assert.equal(openingResult.success,true);assert.equal((await call('get_element',{floorId:floor,id:openingResult.project.floors[1].openings[0].id})).type,'opening');
+controller.abort();assert.equal(tools.size,0);console.log('PASS: WebMCP tool registration, latest-state reads, floor/room/color actions, validation failures, view/selection and lifecycle cleanup.');

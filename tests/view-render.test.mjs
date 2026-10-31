@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {emptyProject} from '../src/model.ts';
+import {GalleryStore} from '../server/ai/store.ts';
+import {runViewRender} from '../server/ai/viewRender.ts';
+import {handleCreativeRequest} from '../server/ai/router.ts';
+class Bucket{objects=new Map();async put(key,value,options={}){this.objects.set(key,{value,options})}async get(key){const x=this.objects.get(key);if(!x)return null;return{httpMetadata:x.options.httpMetadata,body:x.value,json:async()=>JSON.parse(x.value),arrayBuffer:async()=>x.value.buffer.slice(x.value.byteOffset,x.value.byteOffset+x.value.byteLength)}}async list({prefix}){return{objects:[...this.objects.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key})),truncated:false}}}
+const project=emptyProject(),bucket=new Bucket(),store=new GalleryStore(bucket,'test/',project.id),source=await store.saveAsset(new TextEncoder().encode('RIFF'+'a'.repeat(100)),'image/webp','Captured Orbit'),snapshot=JSON.stringify(project);let count=0,requests=[];
+const fake=async(url,options)=>{count++;const body=JSON.parse(options.body);requests.push(body);assert.equal(url,'https://api.meta.ai/v1/images/edits');assert.equal(body.model,'muse-image-1.0');assert.equal(body.n,1);assert.equal(body.images.length,1);return Response.json({data:[{b64_json:btoa('RIFF'+'b'.repeat(100))}],output_format:'webp'})};
+const first=await runViewRender('test-only',store,{id:'first',view:'orbit',referenceId:source.id,prompt:'Warm timber and white render'},project,fake);assert.equal(first.sourceId,source.id);assert.match(requests[0].prompt,/3D Orbit viewport/);assert.match(requests[0].prompt,/camera angle/);
+const second=await runViewRender('test-only',store,{id:'second',view:'plan',parentId:first.id,prompt:'Show the same house at sunset'},project,fake);assert.equal(second.parentId,first.id);assert.equal(second.sourceId,first.asset.id);assert.match(requests[1].prompt,/sunset/);assert.doesNotMatch(requests[1].prompt,/Canonical project/);
+await runViewRender('test-only',store,{id:'second',view:'plan',parentId:first.id,prompt:'Show the same house at sunset'},project,fake);assert.equal(count,2,'Successful retries reuse the saved image');
+assert.ok(await store.read('view-renders/first.json'));assert.ok(await store.read('view-renders/second.json'));assert.equal(JSON.stringify(project),snapshot);await assert.rejects(()=>runViewRender('test-only',store,{id:'bad',view:'plan',parentId:'missing',prompt:'Edit it'},project,fake),/not found/);
+const env={MODEL_API_KEY:'test',BUCKET:bucket};const denied=await handleCreativeRequest(new Request('https://site.test/api/creative/view-history?projectId='+project.id),env,fake);assert.equal(denied.status,401);
+const response=await handleCreativeRequest(new Request('https://site.test/api/creative/view-history?projectId='+project.id,{headers:{'oai-authenticated-user-id':'another-user'}}),env,fake);assert.deepEqual((await response.json()).history,[]);
+console.log('PASS: captured-view references, one-image generation, selected-image refinement, parent lineage, saved history, idempotent retries, unchanged geometry, and user isolation.');

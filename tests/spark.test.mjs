@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {emptyProject,validate} from '../src/model.ts';
+import {executeRoomEdits} from '../src/ai-model.ts';
+import {runSpark,handleAssistantRequest} from '../server/spark.ts';
+
+const base=emptyProject(),original=JSON.stringify(base);
+const planned=executeRoomEdits(base,[{action:'add',kind:'living',width:12,depth:14},{action:'add',kind:'bedroom',width:12,depth:12}]);
+assert.equal(planned.floors[0].rooms.length,2);
+assert.equal(validate(planned).filter(c=>c.message==='Rooms overlap').length,0);
+assert.equal(JSON.stringify(base),original);
+const snapshot=JSON.stringify(planned),id=planned.floors[0].rooms[1].id;
+assert.throws(()=>executeRoomEdits(planned,[{action:'update',id,x:4,y:5}]),/overlaps/);
+assert.equal(JSON.stringify(planned),snapshot);
+assert.throws(()=>executeRoomEdits(planned,[{action:'update',id,x:-3}]),/envelope/);
+assert.throws(()=>executeRoomEdits(planned,[{action:'update',id,width:NaN}]),/finite/);
+assert.throws(()=>executeRoomEdits(planned,[{action:'delete',id:'invented'}]),/not found/);
+assert.throws(()=>executeRoomEdits(base,[{action:'add',name:'Unsafe',__proto__:null,execute:'bad'}]),/Unsupported/);
+
+let calls=0;
+const fake=async(url,options)=>{assert.equal(url,'https://api.meta.ai/v1/responses');const body=JSON.parse(options.body);assert.equal(body.model,'muse-spark-1.3');calls++;
+ if(calls===1)return Response.json({id:'resp_1',output:[{type:'function_call',name:'apply_room_edits',call_id:'call_1',arguments:JSON.stringify({edits:[{action:'add',kind:'bedroom',width:11,depth:12}]})}]});
+ assert.equal(body.previous_response_id,undefined);assert.equal(body.store,false);assert.ok(body.input.some(i=>i.type==='function_call'&&i.call_id==='call_1'));assert.equal(JSON.parse(body.input.filter(i=>i.type==='function_call_output').at(-1).output).success,true);
+ return Response.json({id:'resp_2',output:[{type:'message',content:[{type:'output_text',text:'Added your bedroom.'}]}]});};
+const result=await runSpark('test-only',base,'Add a bedroom.',[],fake);
+assert.equal(result.project.floors[0].rooms.length,1);assert.equal(result.changes,1);assert.equal(JSON.stringify(base),original);
+let denied=await handleAssistantRequest(new Request('https://site.test/api/assistant',{method:'POST'}),{MODEL_API_KEY:'test-only'},fake);assert.equal(denied.status,401);
+let missing=await handleAssistantRequest(new Request('https://site.test/api/assistant',{method:'POST',headers:{'oai-authenticated-user-id':'user'}}),{},fake);assert.equal(missing.status,503);
+let cross=await handleAssistantRequest(new Request('https://site.test/api/assistant',{method:'POST',headers:{'oai-authenticated-user-id':'user',origin:'https://other.test'}}),{MODEL_API_KEY:'test-only'},fake);assert.equal(cross.status,403);
+let providerFailure=async()=>new Response('bad key',{status:401});await assert.rejects(()=>runSpark('test-only',base,'Add a room',[],providerFailure),/rejected the API key/);
+console.log('PASS: automatic placement, atomic AI edits, invalid operations, tool loop, auth, origin checks, and provider errors.');
+await assert.rejects(()=>runSpark('test-only',base,'Add a door',[],async()=>Response.json({error:{message:'Invalid parameters for function manage_project'}},{status:400})),/Invalid parameters/);
+await runSpark('test-only',base,'Describe supported edits',[],async(_url,options)=>{const request=JSON.parse(options.body),manage=request.tools.find(t=>t.name==='manage_project');assert.equal(manage.parameters.properties.project,undefined);assert.deepEqual(manage.parameters.properties.action.enum,['new','duplicate','load-example']);return Response.json({id:'schema-valid',output:[{type:'message',content:[{type:'output_text',text:'Ready.'}]}]});});

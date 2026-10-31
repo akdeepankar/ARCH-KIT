@@ -1,0 +1,32 @@
+import {useEffect,useRef,useState} from 'react';
+import {ArrowUp,CheckCircle2,LoaderCircle,Sparkles,Square,RotateCcw} from 'lucide-react';
+import type {Project} from './model';
+import type {SparkResult} from '../server/spark';
+type Message={role:'user'|'assistant';content:string;error?:boolean};
+export function Planner({project,selectedRoomId,selectedWallCode,selectedWallName,view,onApply,onVisualRequest}:{project:Project;selectedRoomId?:string;selectedWallCode?:string;selectedWallName?:string;view?:string;onVisualRequest?:(text:string)=>void;onApply:(result:SparkResult,snapshot:string)=>boolean}){
+ const[messages,setMessages]=useState<Message[]>([]),[prompt,setPrompt]=useState(''),[busy,setBusy]=useState(false),[configured,setConfigured]=useState<boolean|null>(null),[connectionError,setConnectionError]=useState(false);
+ const abort=useRef<AbortController|null>(null),bottom=useRef<HTMLDivElement>(null),apply=useRef(onApply);apply.current=onApply;
+ async function check(){setConnectionError(false);try{const r=await fetch('/api/assistant',{cache:'no-store'});if(!r.ok)throw Error();const data=await r.json() as {configured:boolean};setConfigured(!!data.configured)}catch{setConnectionError(true);setConfigured(null)}}
+ useEffect(()=>{check();return()=>abort.current?.abort()},[]);
+ useEffect(()=>{bottom.current?.scrollIntoView({block:'nearest'});},[messages,busy]);
+ async function send(text=prompt){if(onVisualRequest&&/\b(render|visuali[sz]e|concepts?|interior design|exterior design|image|photo(?:realistic)?)\b/i.test(text)&&/\b(generate|create|show|render|visuali[sz]e|design|refine)\b/i.test(text)){onVisualRequest(text);setPrompt('');return}if(busy||!text.trim()||configured!==true)return;const snapshot=JSON.stringify(project),controller=new AbortController();abort.current=controller;setPrompt('');setBusy(true);const previous=messages.filter(m=>!m.error);setMessages(ms=>[...ms,{role:'user',content:text}]);
+  try{const r=await fetch('/api/assistant',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:JSON.parse(snapshot),prompt:text,selectedRoomId,selectedWallCode,view,messages:previous.slice(-6)}),signal:controller.signal});const result=await r.json() as SparkResult&{error?:string};if(!r.ok)throw Error(result.error||'The planning request could not finish.');
+   if(typeof result.message!=='string'||!result.project)throw Error('Spark returned an invalid plan. Your layout has not changed.');
+   if(!apply.current(result,snapshot))throw Error('The plan changed while Spark was working. Please send your request again using the current layout.');
+   setMessages(ms=>[...ms,{role:'assistant',content:result.message}]);
+  }catch(e){if(controller.signal.aborted)setMessages(ms=>[...ms,{role:'assistant',content:'Planning cancelled. Your layout has not changed.'}]);else setMessages(ms=>[...ms,{role:'assistant',content:e instanceof Error?e.message:'Unable to connect to Spark.',error:true}]);}finally{setBusy(false);abort.current=null}}
+ const suggestions=project.floors.find(f=>f.id===project.active)?.rooms.length?['Add a door between the living room and kitchen.','Paint the living room walls sage green and the exterior warm white.','Calculate my floor area and find layout issues.']:['Plan a 2-bedroom home with a kitchen, living room and bathroom.','Create a compact 1-bedroom home with an office.','Fit three bedrooms and two bathrooms on my plot.'];
+ return <section className="spark-panel" aria-label="Muse Spark architecture assistant">
+  <header className="spark-header"><span className="spark-mark"><Sparkles size={18}/></span><div><strong>Architecture assistant</strong><small>MUSE SPARK 1.3</small></div></header>
+  {selectedWallCode&&<div className="spark-selected-wall"><strong>{selectedWallName}</strong><span>{selectedWallCode}</span></div>}
+  <div className="spark-connection"><span className={configured?'ready':''}/><small>{connectionError?'Connection unavailable':configured===null?'Checking connection…':configured?'Connected · floors, doors, windows, stairs & colors':'Server API key required'}</small>{!busy&&<button title="Refresh connection" aria-label="Refresh AI connection" onClick={check}><RotateCcw size={12}/></button>}</div>
+  <div className="spark-messages">
+   {!messages.length&&<div className="spark-intro"><span className="eyebrow">PLAN WITH YOUR WORDS</span><h3>Tell me how you want to live.</h3><p>Add or edit floors, rooms, doors, windows, walls, stairs, roofs, and colors. I’ll plan within your plot and edit the same model you draw.</p><div className="spark-suggestions">{suggestions.map(s=><button key={s} disabled={!configured||busy} onClick={()=>send(s)}>{s}<ArrowUp size={12}/></button>)}</div><div className="spark-rules"><CheckCircle2 size={14}/><span>Valid edits apply automatically. Overlaps are blocked and every change can be undone.</span></div></div>}
+   {configured===false&&<div className="spark-setup"><strong>Connect Meta Model API</strong><p>Add <code>MODEL_API_KEY</code> to this site’s server secrets, then refresh the connection. The key stays on the server.</p><a href="https://dev.meta.ai/docs/quickstart" target="_blank" rel="noreferrer">Meta setup guide ↗</a></div>}
+   {messages.map((m,i)=><div key={i} className={`spark-message ${m.role} ${m.error?'error':''}`}><small>{m.role==='user'?'YOU':m.error?'COULDN’T COMPLETE':'MUSE SPARK'}</small><p>{m.content}</p></div>)}
+   {busy&&<div className="spark-working" role="status"><LoaderCircle size={15}/><span>Planning and checking your rooms…</span></div>}
+   <div ref={bottom}/>
+  </div>
+  <form className="spark-compose" onSubmit={e=>{e.preventDefault();send()}}><textarea aria-label="Describe your room plan" placeholder={configured?'Add a door, place windows, connect stairs, or change your design…':'Connect the server API key to start planning…'} value={prompt} onChange={e=>setPrompt(e.target.value)} disabled={busy||!configured} maxLength={6000} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}}/><div><span>{busy?'You can cancel before edits apply.':'Enter to send · Shift + Enter for a new line'}</span>{busy?<button type="button" className="spark-send" aria-label="Cancel planning" title="Cancel planning" onClick={()=>abort.current?.abort()}><Square size={12}/></button>:<button className="spark-send" type="submit" aria-label="Send planning request" title="Send planning request" disabled={!configured||!prompt.trim()}><ArrowUp size={16}/></button>}</div></form>
+ </section>
+}

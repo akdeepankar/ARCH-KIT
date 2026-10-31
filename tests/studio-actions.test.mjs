@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {emptyProject,validProject,roomWalls,newFloor,uid} from '../src/model.ts';
+import {executeStudioTool,executeFloorEdits,executeSurfaceEdits,executeExteriorEdits,inspectProject,spaceCatalog} from '../src/studioActions.ts';
+import {wallFaceColors} from '../src/wallAppearance.ts';
+import {runSpark} from '../server/spark.ts';
+let p=emptyProject(),ground=p.active;
+p=executeStudioTool(p,'apply_room_edits',{edits:[{action:'add',kind:'living',x:3,y:5,width:10,depth:10},{action:'add',kind:'kitchen',x:13,y:5,width:10,depth:10}]});
+let [living,kitchen]=p.floors[0].rooms;
+p=executeSurfaceEdits(p,{edits:[{target:'interior',color:'#aaaaaa'},{target:'exterior',color:'#abcdef'},{target:'room-wall',roomId:living.id,side:1,color:'#ff0000'},{target:'room-wall',roomId:kitchen.id,side:3,color:'#0000ff'},{target:'room-exterior',roomId:living.id,side:0,color:'#00ff00'}]});
+let f=p.floors[0],shared=roomWalls(f).find(s=>s.rooms.length===2),faces=wallFaceColors(p,f,shared);
+assert.equal(faces.positive,'#0000ff');assert.equal(faces.negative,'#ff0000','shared wall colors stay independent');
+let north=roomWalls(f).find(s=>s.y===5&&s.x===3&&s.y2===5);faces=wallFaceColors(p,f,north);assert.equal(faces.positive,'#aaaaaa');assert.equal(faces.negative,'#00ff00','exterior override is outward only');
+p=executeSurfaceEdits(p,{edits:[{target:'room-wall',roomId:living.id,color:'#135713'}]});assert.deepEqual(p.floors[0].rooms[0].wallColors,undefined);
+p=executeSurfaceEdits(p,{edits:[{target:'room-wall',roomId:living.id,color:null}]});assert.equal(wallFaceColors(p,p.floors[0],shared).negative,'#aaaaaa');
+const snapshot=JSON.stringify(p);assert.throws(()=>executeSurfaceEdits(p,{edits:[{target:'exterior',color:'#123456'},{target:'room-wall',roomId:living.id,side:9,color:'#ff0000'}]}),/side/);assert.equal(JSON.stringify(p),snapshot,'failed batch is atomic');
+assert.throws(()=>executeSurfaceEdits(p,{edits:[{target:'exterior',color:'red'}]}));assert.throws(()=>executeSurfaceEdits(p,{edits:[{target:'room-floor',roomId:living.id,color:null}]}));
+assert.throws(()=>executeSurfaceEdits(p,{edits:[{target:'room-wall',roomId:'missing',color:'#ff0000'}]}));
+const broken=structuredClone(p);broken.floors[0].rooms[0].wallColors={'4':'#123456'};assert.equal(validProject(broken),false);broken.floors[0].rooms[0].wallColors={'0':'red'};assert.equal(validProject(broken),false);assert.equal(validProject(JSON.parse(JSON.stringify(p))),true);
+p=executeFloorEdits(p,{edits:[{action:'add',name:'First Floor',height:11}]});const upper=p.active;assert.notEqual(upper,ground);
+p=executeStudioTool(p,'apply_room_edits',{edits:[{action:'add',floorId:upper,kind:'office',shape:'l',width:12,depth:12},{action:'update',floorId:ground,id:living.id,name:'Lounge'}]});assert.equal(p.floors[0].rooms[0].name,'Lounge');assert.equal(p.floors[1].rooms[0].shape,'l');
+p=executeFloorEdits(p,{edits:[{action:'duplicate',id:upper,name:'Second Floor'}]});assert.equal(p.floors.length,3);assert.notEqual(p.floors[1].rooms[0].id,p.floors[2].rooms[0].id);assert.equal(p.floors[2].name,'Second Floor');
+p=executeExteriorEdits(p,{edits:[{action:'add',floorId:ground,kind:'Canopy',x:3,y:1,width:10,depth:3,color:'#998877'}]});const exterior=p.floors[0].exteriors[0];assert.equal(exterior.color,'#998877');
+p=executeSurfaceEdits(p,{edits:[{target:'exterior-feature',floorId:ground,id:exterior.id,color:'#112233'}]});assert.equal(p.floors[0].exteriors[0].color,'#112233');
+assert.throws(()=>executeExteriorEdits(p,{edits:[{action:'update',floorId:ground,id:exterior.id,x:29}]}),/inside/);
+p=executeFloorEdits(p,{edits:[{action:'delete',id:upper}]});assert.equal(p.floors.length,2);assert.equal(validProject(p),true);
+const only=emptyProject();assert.throws(()=>executeFloorEdits(only,{edits:[{action:'delete',id:only.active}]}),/at least one/);
+assert.throws(()=>executeStudioTool(p,'apply_room_edits',{edits:[{action:'add',floorId:null}]}),/IDs/);
+assert.equal(spaceCatalog().spaces.length,10);assert.equal(spaceCatalog().footprints.length,6);assert.equal(inspectProject(p).wallSides[0].rooms[0].sides.length,4);
+// Muse Spark's actual function loop must dispatch all shared studio actions.
+const base=emptyProject();let turn=0;
+const fake=async(_url,options)=>{const body=JSON.parse(options.body);turn++;
+ for(const tool of ['apply_floor_edits','apply_room_edits','apply_surface_colors','apply_exterior_edits'])assert.ok(body.tools.some(t=>t.name===tool));
+ if(turn===1)return Response.json({id:'r1',output:[{type:'function_call',name:'apply_floor_edits',call_id:'floor',arguments:JSON.stringify({edits:[{action:'add',name:'Studio Floor'}]})}]});
+ if(turn===2){assert.equal(JSON.parse(body.input.filter(i=>i.type==='function_call_output').at(-1).output).success,true);return Response.json({id:'r2',output:[{type:'function_call',name:'apply_room_edits',call_id:'room',arguments:JSON.stringify({edits:[{action:'add',kind:'office',width:9,depth:10}]})}]})}
+ if(turn===3){const draft=JSON.parse(body.input.filter(i=>i.type==='function_call_output').at(-1).output).project;return Response.json({id:'r3',output:[{type:'function_call',name:'apply_surface_colors',call_id:'paint',arguments:JSON.stringify({edits:[{target:'exterior',color:'#aaaaaa'},{target:'room-wall',floorId:draft.active,roomId:draft.floors[1].rooms[0].id,side:0,color:'#a3b18a'}]})},{type:'function_call',name:'apply_exterior_edits',call_id:'feature',arguments:JSON.stringify({edits:[{action:'add',kind:'Canopy',x:3,y:1,width:8,depth:3,color:'#112233'}]})}]})}
+ assert.ok(body.input.filter(i=>i.type==='function_call_output').every(i=>JSON.parse(i.output).success));return Response.json({id:'r4',output:[{type:'message',content:[{type:'output_text',text:'Added a studio floor, office, canopy and wall colors.'}]}]});
+};
+const result=await runSpark('test-only',base,'Add a floor and office, paint its north wall sage and add a canopy.',[],fake);
+assert.equal(result.project.floors.length,2);assert.equal(result.project.floors[1].rooms[0].wallColors['0'],'#a3b18a');assert.equal(result.project.floors[1].exteriors[0].color,'#112233');assert.equal(base.floors.length,1);assert.equal(result.changes,5);
+console.log('PASS: floor/room/exterior CRUD, shared-face paint, reset inheritance, persistence, invalid batches and Muse Spark studio tools.');
